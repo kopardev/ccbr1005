@@ -2,7 +2,7 @@
 suppressPackageStartupMessages(library("argparse"))
 
 # create parser object
-parser <- ArgumentParser()
+parser <- ArgumentParser(description="Convert narrowPeak output to fixedwidth peakset as per the pan-cancer genome paper (https://doi.org/10.1126/science.aav1898). This involves ... First, the most significant peak is kept and any peak that directly overlaps with that significant peak is removed. Then, this process iterates to the next most significant peak and so on until all peaks have either been kept or removed due to direct overlap with a more significant peak. This prevents the removal of peaks due to daisy chaining or indirect overlap and simultaneously maintains a compendium of fixed-width peaks. The significance of each peak is determined by normalized p-values.  To normalize, the peak scores (-log10(p-value)) for each sample were converted to a score per million by dividing each individual peak score by the sum of all of the peak scores in the given sample divided by 1 million. NOTE: this script requires bedtools to be in the PATH")
 
 # specify our desired options 
 # by default ArgumentParser will add an help option 
@@ -38,11 +38,11 @@ narrowPeak=args$inputNarrowPeak
 
 if (debug==1){
 narrowPeak="/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/uniform_width_peaks/HCC2157_1.genrich.narrowPeak"
-out_narrowPeak=gsub("narrowPeak$","samplePeakSet.narrowPeak",narrowPeak)
+out_narrowPeak=gsub("narrowPeak$","fixed_width.narrowPeak",narrowPeak)
 setwd(dirname(narrowPeak))
 } else {
   if(is.null(args$outputNarrowPeak)){
-    out_narrowPeak=gsub("narrowPeak$","samplePeakSet.narrowPeak",narrowPeak)
+    out_narrowPeak=gsub("narrowPeak$","fixed_width.narrowPeak",narrowPeak)
   } else {
     out_narrowPeak=args$outputNarrowPeak
   }

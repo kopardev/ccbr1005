@@ -2,14 +2,17 @@
 suppressPackageStartupMessages(library("argparse"))
 
 # create parser object
-parser <- ArgumentParser()
-
+parser <- ArgumentParser(description="Convert narrowPeak output to fixedwidth peakset as per the pan-cancer genome paper (https://doi.org/10.1126/science.aav1898) using the script narrowPeak_to_fixed_width_peakSet.R. This involves ...First, all replicate peak sets are combined into a cumulative peak set and trimmed for overlap using the same iterative procedure as narrowPeak_to_fixed_width_peakSet, i.e, keep the most significant (based of score per million or normalized p-value) peak and discards any peak that overlaps directly with the most significant peak. To identify reproducible peaks from this merged peak set, the individual replicate peak sets were overlapped with the merged peak set. Peaks from the merged peak set that were observed in at least 2(minReps) samples with a score per million value >=5(cutoffSPM) were labeled as reproducible and reported in the output narrowPeak file. NOTE: this script requires bedtools to be in the PATH")
 # specify our desired options 
 # by default ArgumentParser will add an help option 
 
 parser$add_argument("-i", "--inputNarrowPeaks", 
                     type="character", 
-                    help="fixed width narrowPeak input files from narrowPeak2uniformwidthpeakset.R",
+                    help="fixed width narrowPeak input files from narrowPeak_to_fixed_width_peakSet.R",
+                    required=TRUE)
+parser$add_argument("-p", "--inputPrefixes", 
+                    type="character", 
+                    help="prefixes to be added to the peaknames from the inputNarrowPeaks to avoid name clashes",
                     required=TRUE)
 parser$add_argument("-o", "--outputNarrowPeak", 
                     type="character", 
@@ -20,21 +23,34 @@ parser$add_argument("-t", "--tmpdir",
                     help="tmp dir",
                     required=FALSE,
                     default=NULL)
+parser$add_argument("-m", "--minReps", 
+                    type="integer",
+                    help="minimum replicates that need to overlap for any peak to be considered a consensus peak",
+                    required=FALSE,
+                    default=2)
+parser$add_argument("-c", "--cutoffSPM", 
+                    type="integer",
+                    help="cutoff score per million or normalized p-value. All minimum number of replicate peaks that need to overlap with a consensus peak should also be greater than this cutoff score per million or SPM",
+                    required=FALSE,
+                    default=5)
+
 
 args <- parser$parse_args()
 
-norm_pvalue_threshold=5
-min_replicates=2
+norm_pvalue_threshold=args$cutoffSPM
+min_replicates=args$minReps
 
 suppressPackageStartupMessages(library("tidyverse"))
 
 debug=0
 
 narrowPeaks=unlist(strsplit(args$inputNarrowPeak,","))
+prefixes=unlist(strsplit(args$inputPrefixes,","))
 out_narrowPeak=args$outputNarrowPeak
 
 if (debug==1){
 narrowPeaks=unlist(strsplit("/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/uniform_width_peaks/HCC2157_1.genrich.samplePeakSet.narrowPeak,/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/uniform_width_peaks/HCC2157_2.genrich.samplePeakSet.narrowPeak",","))
+prefixes=unlist(strsplit("HCC2157_1,HCC2157_2",sep=","))
 out_narrowPeak="HCC2157.genrich.consensus.narrowPeak"
 setwd(dirname(narrowPeak))
 } else {
@@ -47,9 +63,9 @@ setwd(dirname(narrowPeak))
 }
 bn=basename(out_narrowPeak)
 
-readnarrowpeak<-function(narrowPeak){
+readnarrowpeak<-function(narrowPeak,prefix){
   # cat(narrowPeak)
-  bn=basename(narrowPeak)
+  # bn=basename(narrowPeak)
   x=read.csv(narrowPeak,
              header=FALSE,
              sep = "\t",
@@ -67,14 +83,14 @@ readnarrowpeak<-function(narrowPeak){
                 "normalizedpvalue",
                 "qvalue",
                 "summitdist")
-  x$peakname=paste(bn,x$peakname,sep="_")
+  x$peakname=paste(prefix,x$peakname,sep="_")
   return(x)
 }
 
-xdf <- readnarrowpeak(narrowPeaks[1])
+xdf <- readnarrowpeak(narrowPeaks[1],prefixes[1])
 
 for (i in 2:length(narrowPeaks)) {
-  xdf2=readnarrowpeak(narrowPeaks[i])
+  xdf2=readnarrowpeak(narrowPeaks[i],prefixes[i])
   xdf=rbind(xdf,xdf2)
 }
 
