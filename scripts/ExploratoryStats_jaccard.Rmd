@@ -1,0 +1,213 @@
+---
+title: "ExploratoryStats"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("edgeR"))
+suppressPackageStartupMessages(library("tidyverse"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("pander"))
+suppressPackageStartupMessages(library("plotly"))
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggfortify"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("vsn"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressMessages(library("RColorBrewer"))
+suppressMessages(library("reshape2"))
+suppressMessages(library("pheatmap"))
+mount="/Volumes/Ambs_ATACseq/"
+seqmetadata=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/exploratory_analysis/sequencing_metadata.tsv"),sep="\t",header=TRUE,strip.white = TRUE,check.names = FALSE,colClasses = "character")
+colnames(seqmetadata)=gsub(" ","",colnames(seqmetadata))
+```
+
+## Sequencing MetaData
+
+```{r metadata,include=TRUE,echo=FALSE}
+pander(seqmetadata,style="rmarkdown")
+```
+
+
+## Jaccard analysis
+
+### Definition: 
+  [Jaccard statistic](https://bedtools.readthedocs.io/en/latest/content/tools/jaccard.html) measures the ratio of the number of intersecting base pairs between two sets to the number of base pairs in the union of the two sets.
+  
+Using consensus peaks called with MACS2 and Genrich, pair wise jaccard statistics is calculated for all possible pairs. This jaccard statistic matrix can then be plot as a PCA plot as shown below. 
+
+Remember, Jaccard Statistic only measures the overlap in "open" chromatin regions between paired samples. It does not account for the "magnitude of open-ness" which can be estimated from the relative normalized coverage in shared open regions of any pair being compared. In order words, we will have to look at relative abundance of Tn5 nicking sites in shared open regions to explore difference in "magnitude of open-ness".
+
+
+```{r jaccard_all_methods, include=FALSE,echo=FALSE}
+pairwise_all=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/QC/jaccard/allmethods.consensus.jaccard.pairwise.txt"),header=FALSE,sep="\t")
+m=reshape2::dcast(pairwise_all,V1~V2,value.var="V3")
+names(m)[names(m) == 'V1'] <- "SampleName"
+mat <- column_to_rownames(m,var="SampleName")
+m <- separate(m,col="SampleName",into=c("SampleName","PeakCaller"),remove=TRUE)
+head(m)
+m2 <- merge(m,seqmetadata,by=c("SampleName"))
+
+#PCA
+m.pca=prcomp(mat,scale. = T)
+m.pc1 = round(m.pca$sdev[1]^2/sum(m.pca$sdev^2)*100,2)
+m.pc2 = round(m.pca$sdev[2]^2/sum(m.pca$sdev^2)*100,2)
+m.pc3 = round(m.pca$sdev[3]^2/sum(m.pca$sdev^2)*100,2)
+MolecularSubtype=as.factor(m2$MolecularSubtype)
+PeakCaller=as.factor(m2$PeakCaller)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+
+```{r pca_peak_caller, include=TRUE,echo=FALSE}
+# p <- ggplot2::autoplot(m.pca,label=T,
+#                        repel = TRUE,
+#                        label.size = 3,
+#                        label.repel=T,
+#                        colour=as.numeric(as.factor(m2$PeakCaller)),
+#                        shape=as.numeric(as.factor(m2$MolecularSubtype)))+
+#   theme_light()+
+#   ggtitle("Jaccard pairwise scores PCA")
+# p <- p+labs(colour = m2$PeakCaller)
+# print(p)
+  # geom_label_repel(aes(label = rownames(m.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+
+
+p <- ggplot(m.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(col=PeakCaller,
+                 shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("Jaccard pairwise scores PCA")
+p+theme_light()
+print(p)
+```
+
+
+Seems like PC2 is separating samples based off of peak caller. MACS2 to the top and Genrich to the bottom.
+If we add the cell line names.
+
+
+```{r pca_w_cell_line_names,include=TRUE,echo=FALSE}
+p <- ggplot(m.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(col=PeakCaller,
+                 shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  geom_label_repel(aes(label = rownames(m.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+  ggtitle("Jaccard pairwise scores PCA")
+p+theme_light()
+print(p)
+```
+
+
+Considering only Genrich peak calls
+
+
+
+```{r pca_genrich_only,include=TRUE,echo=FALSE}
+a=str_detect(pairwise_all$V1,"genrich")
+b=str_detect(pairwise_all$V2,"genrich")
+pairwise_genrich=pairwise_all[a&b,]
+m_genrich=reshape2::dcast(pairwise_genrich,V1~V2,value.var="V3")
+names(m_genrich)[names(m_genrich) == 'V1'] <- "SampleName"
+mat_genrich <- column_to_rownames(m_genrich,var="SampleName")
+m_genrich <- separate(m_genrich,col="SampleName",into=c("SampleName","PeakCaller"),remove=TRUE)
+m_genrich <- merge(m_genrich,seqmetadata,by=c("SampleName"))
+#PCA
+m_genrich.pca=prcomp(mat_genrich,scale. = T)
+m_genrich.pc1 = round(m_genrich.pca$sdev[1]^2/sum(m_genrich.pca$sdev^2)*100,2)
+m_genrich.pc2 = round(m_genrich.pca$sdev[2]^2/sum(m_genrich.pca$sdev^2)*100,2)
+m_genrich.pc3 = round(m_genrich.pca$sdev[3]^2/sum(m_genrich.pca$sdev^2)*100,2)
+MolecularSubtype=as.factor(m_genrich$MolecularSubtype)
+PeakCaller=as.factor(m_genrich$PeakCaller)
+POC=as.factor(m_genrich$POC)
+NAS=as.factor(m_genrich$NAS)
+MultiplexPerLane=as.factor(m_genrich$MultiplexPerLane)
+FlowcellID=as.factor(m_genrich$FlowcellID)
+Ethnicity=as.factor(m_genrich$Ethnicity)
+SeqDate=as.factor(m_genrich$SeqDate)
+ReadLength=as.factor(m_genrich$ReadLength)
+xlab=paste0("PC1(",m_genrich.pc1,"%)")
+ylab=paste0("PC2(",m_genrich.pc2,"%)")
+p <- ggplot(m_genrich.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(
+                 shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  geom_label_repel(aes(label = rownames(m_genrich.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+  ggtitle("Jaccard pairwise scores PCA (Genrich only)")+
+  theme_light()
+print(p)
+```
+
+Effect of POC: Seems like there is slight separation by POC on the PC2 axis
+
+```{r poc,include=TRUE,echo=FALSE}
+p <- ggplot(m_genrich.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(col=POC,
+                 shape=POC))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  geom_label_repel(aes(label = rownames(m_genrich.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+  ggtitle("Jaccard pairwise scores PCA (Genrich only)")+
+  theme_light()
+print(p)
+```
+
+Effect of FlowcellID
+
+```{r fid,include=TRUE,echo=FALSE}
+p <- ggplot(m_genrich.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(col=FlowcellID,
+                 shape=FlowcellID))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  geom_label_repel(aes(label = rownames(m_genrich.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+  ggtitle("Jaccard pairwise scores PCA (Genrich only)")+
+  theme_light()
+print(p)
+```
+
+Effect of Ethnicity
+
+```{r eth,include=TRUE,echo=FALSE}
+p <- ggplot(m_genrich.pca$x,aes(x=PC1,y=PC2))+
+  geom_point(aes(col=Ethnicity,
+                 shape=Ethnicity))+scale_shape_manual(values=seq(0,15))+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  geom_label_repel(aes(label = rownames(m_genrich.pca$x)),size=1.5,col=as.numeric(MolecularSubtype))+
+  ggtitle("Jaccard pairwise scores PCA (Genrich only)")+
+  theme_light()
+print(p)
+```
+
+Representing as correlation matrix
+
+
+```{r corr_heat,include=TRUE,echo=FALSE}
+matx=mat_genrich
+colnames(matx)=gsub("_genrich","",colnames(matx))
+rownames(matx)=gsub("_genrich","",rownames(matx))
+colann=m_genrich[,c("SampleName","MolecularSubtype")] %>% column_to_rownames(var="SampleName")
+colrow=m_genrich[,c("SampleName","Ethnicity")] %>% column_to_rownames(var="SampleName")
+ann_colors=list(Ethnicity=c(Black="black",Caucasian="white"))
+pheatmap(as.matrix(matx),display_numbers = T,
+         color = colorRampPalette(c('white','red'))(100),
+         annotation_row = colrow,
+         annotation_col = colann,
+         annotation_colors = ann_colors,
+         fontsize_number=4,
+         treeheight_row = 20,
+         treeheight_col = 20,
+         cellwidth = 10,
+         cellheight = 10)
+
+```
+

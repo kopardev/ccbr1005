@@ -1,0 +1,278 @@
+---
+title: "ExploratoryStats"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("edgeR"))
+suppressPackageStartupMessages(library("tidyverse"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("pander"))
+suppressPackageStartupMessages(library("plotly"))
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggfortify"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("vsn"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressMessages(library("RColorBrewer"))
+suppressMessages(library("reshape2"))
+suppressMessages(library("pheatmap"))
+mount="/Volumes/Ambs_ATACseq/"
+seqmetadata=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/exploratory_analysis/sequencing_metadata.tsv"),sep="\t",header=TRUE,strip.white = TRUE,check.names = FALSE,colClasses = "character")
+colnames(seqmetadata)=gsub(" ","",colnames(seqmetadata))
+sample_manifest=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/samples.tsv"),sep="\t",header=TRUE,strip.white = TRUE,check.names = FALSE,colClasses = "character")
+```
+
+## Sequencing MetaData
+
+Each cell line has 2 replicates
+
+```{r metadata,include=TRUE,echo=FALSE}
+pander(seqmetadata,style="rmarkdown")
+```
+
+
+## Library Complexity analysis 
+
+Recommended values:
+
+| PBC1             | PBC2         | Bottlenecking level | NRF             | Complexity |
+| ---------------- | ------------ | ------------------- | --------------- | ---------- |
+| < 0.7            | < 1          | Severe              | < 0.7           | Concerning | 
+| 0.7 ≤ PBC1 ≤ 0.9 | 1 ≤ PBC2 ≤ 3 | Moderate            | 0.7 ≤ NRF ≤ 0.9 | Acceptable |
+| \> 0.9           | \> 3         | None                | \> 0.9          | Ideal      |
+  
+  
+  See [Encode](https://www.encodeproject.org/data-standards/terms/) for details.
+
+### NRF: 
+  Non-Redundant Fraction (NRF) – Number of distinct uniquely mapping reads (i.e. after removing duplicates) / Total number of reads.
+
+
+```{r nrfread, include=FALSE,echo=FALSE}
+nrf=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/QC/NRF_stats.tsv"),header=TRUE,sep="\t",strip.white = TRUE,check.names = FALSE,colClasses = "character")
+nrf=merge(nrf,sample_manifest,by=c("replicateName"))
+names(nrf)[names(nrf) == 'sampleName'] <- "SampleName"
+nrf=merge(nrf,seqmetadata,by=c("SampleName"))
+nrf$NRF=as.numeric(nrf$NRF)
+nrf$PBC1=as.numeric(nrf$PBC1)
+nrf$PBC2=as.numeric(nrf$PBC2)
+```
+
+
+```{r nrfplot, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(nrf,aes(x=replicateName,y=NRF))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.7, linetype="dashed", color = "red")
+
+print(p)
+```
+
+It appears that the samples which were repeated by Gati are still below the acceptable limits of NRF. Lower levels of NRF are indicative of lower library complexity or higher duplication rate.
+
+
+### PBC1  
+  PCR Bottlenecking coefficient (PBC1) - number of genomic locations where exactly one read maps uniquely / number of distinct genomic locations to which some read maps uniquely
+  
+  
+```{r pbc1plot, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(nrf,aes(x=replicateName,y=PBC1))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.7, linetype="dashed", color = "red")
+
+print(p)
+```
+
+HCC1806 and HCC2157 appear to still have comparatively lower library complexity.
+  
+### PBC2
+  PCR Bottlenecking Coefficient 2 (PBC2) - number of genomic locations where only one read maps uniquely /number of genomic locations where two reads map uniquely
+
+  
+```{r pbc2plot, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(nrf,aes(x=replicateName,y=PBC2))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=1, linetype="dashed", color = "red")
+
+print(p)
+```
+
+All samples seem to be in the "acceptable" range for PBC2.
+
+## FRiP
+
+Fraction of reads in Peaks is used by [ENCODE](https://www.encodeproject.org/data-standards/terms/) as a metric for assessing sample and its peak calling quality. It is defined as the fraction of all mapped reads that fall into the called peak regions, i.e. usable reads in significantly enriched peaks divided by all usable reads. In general, FRiP scores correlate positively with the number of regions.
+
+Here we are using two different peak callers, MACS2 (used by ENCODE) and Genrich (developed and recommended by Harvard), and so we will be looking at FRiP for both, namely, FRiPMACS2 and FRiPGenrich
+
+Generally, in ATACseq experiments FRiP >=0.3 
+
+
+```{r fripread, include=FALSE,echo=FALSE}
+frip=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/QC/FRiP_stats.tsv"),header=TRUE,sep="\t",strip.white = TRUE,check.names = FALSE,colClasses = "character")
+frip=merge(frip,sample_manifest,by=c("replicateName"))
+names(frip)[names(frip) == 'sampleName'] <- "SampleName"
+frip=merge(frip,seqmetadata,by=c("SampleName"))
+frip$FRiDHS=as.numeric(frip$FRiDHS)
+frip$FRiEnh=as.numeric(frip$FRiEnh)
+frip$FRiPro=as.numeric(frip$FRiPro)
+frip$FRiPGenrich=as.numeric(frip$FRiPGenrich)
+frip$FRiPMACS2=as.numeric(frip$FRiPMACS2)
+
+```
+
+### FRiP for MACS2
+
+```{r fripmacs, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(frip,aes(x=replicateName,y=FRiPMACS2))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.3, linetype="dashed", color = "red")
+
+print(p)
+```
+
+
+### FRiP for Genrich
+
+```{r fripgenrich, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(frip,aes(x=replicateName,y=FRiPGenrich))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.3, linetype="dashed", color = "red")
+
+print(p)
+```
+
+Both, MACS2 and Genrich have FRiP slightly on the lower side for both replicates of MDA-MB-175, but this still seeks acceptable.
+
+### FRiPro
+
+Fraction of reads in annotated promoter regions. Gencode version 30 annotations for Hg38 are used to extract the promoter loci and reads aligning to these regions are calculated.
+
+See CCBR_ATACSeq pipeline [documentation](https://github.com/CCBR/CCBR_ATACseq/tree/master/resources/frip) for details.
+
+Generally, we are expecting about 10-15% of reads in known promoter regions.
+
+```{r fripro, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(frip,aes(x=replicateName,y=FRiPro))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.1, linetype="dashed", color = "red")
+
+print(p)
+```
+
+### FRiDHS
+
+Fraction of reads aligning to known DNAse Hypersensitivity Sites is calculated for all replicates. 
+
+See CCBR_ATACSeq pipeline [documentation](https://github.com/CCBR/CCBR_ATACseq/tree/master/resources/frip) for details.
+
+Generally, we are expecting about 60-80% of reads to fall in known DHS regions.
+
+```{r fridhs, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(frip,aes(x=replicateName,y=FRiDHS))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.6, linetype="dashed", color = "red")
+
+print(p)
+```
+
+
+### FRiEnh
+
+Fraction of reads aligning to known Enhancer regions aggregated from various sources.
+
+See CCBR_ATACSeq pipeline [documentation](https://github.com/CCBR/CCBR_ATACseq/tree/master/resources/frip) for details.
+
+Generally, we are expecting about 60-80% of reads to fall in known Enhancer regions.
+
+```{r frienh, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(frip,aes(x=replicateName,y=FRiEnh))+
+  geom_bar(stat="identity",aes(col=POC,fill=POC),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.6, linetype="dashed", color = "red")
+
+print(p)
+```
+
+## Nucleosome-based metrics
+
+Typically, a successful ATAC-seq experiment should generate a fragment size distribution plot with decreasing and periodical peaks corresponding to the nucleosome-free regions (NFR) (< 100 bp) and mono-, di-, and tri-nucleosomes (~ 200, 400, 600 bp, respectively). High quality ATAC-seq libraries generally contain about 50% of post-filtering reads as short fragments (< 100 bp), which represent nucleosome-free regions. This is called NFR fraction or nucleosome-free read fraction. NFR should not be confused with NRF. NFR can only be computed for paired-end data as fragment length cannot be determined from single-end data.
+
+See https://doi.org/10.1186/s12864-018-4559-3 and https://doi.org/10.1186/s13059-020-1929-3 for details.
+
+
+```{r nfrread, include=FALSE,echo=FALSE}
+nfr=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/QC/FLD_stats_fractions_ratios.tsv"),header=TRUE,sep="\t",strip.white = TRUE,check.names = FALSE,colClasses = "character")
+nfr=merge(nfr,sample_manifest,by=c("replicateName"))
+names(nfr)[names(nfr) == 'sampleName'] <- "SampleName"
+nfr=merge(nfr,seqmetadata,by=c("SampleName"))
+nfr$NUCLEOSOME_FREE_READ_FRACTION=as.numeric(nfr$NUCLEOSOME_FREE_READ_FRACTION)
+nfr$MONONUCLEOSOME_READ_FRACTION=as.numeric(nfr$MONONUCLEOSOME_READ_FRACTION)
+nfr$NFR_TO_MONONUCLEOSOME_READS_RATIO=as.numeric(nfr$NFR_TO_MONONUCLEOSOME_READS_RATIO)
+nfr$NFR_TO_NON_NFR_READS_RATIO=as.numeric(nfr$NFR_TO_NON_NFR_READS_RATIO)
+
+```
+
+```{r nfrplot1, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(nfr,aes(x=replicateName,y=NUCLEOSOME_FREE_READ_FRACTION))+
+  geom_bar(stat="identity",aes(col=MolecularSubtype,fill=MolecularSubtype),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.5, linetype="dashed", color = "red")
+
+print(p)
+```
+
+Most replicates have lower than expected NFR fraction, but the FLD does show TSS enrichment peak representative of NFR.
+
+
+```{r nfrplot2, include=TRUE,echo=FALSE}
+
+
+p <- ggplot(nfr,aes(x=replicateName,y=MONONUCLEOSOME_READ_FRACTION))+
+  geom_bar(stat="identity",aes(col=MolecularSubtype,fill=MolecularSubtype),width=0.5,show.legend = TRUE)+
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  geom_hline(yintercept=0.3, linetype="dashed", color = "red")
+
+print(p)
+```
+
+All replicates have MONONUCLEOSOME_READ_FRACTION > 0.3 and lower than expected NUCLEOSOME_FREE_READ_FRACTION, suggesting that we have less representation from nucleosome-free fragments than expected and more representation from mono-nucleosome-read fraction. This suggests that the overall quality of the ATACseq experiment is "medium".
