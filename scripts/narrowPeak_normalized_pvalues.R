@@ -67,7 +67,7 @@ hist(x$normalized_pvalue)
 summary(x$normalized_pvalue)
 x=arrange(x,desc(normalized_pvalue),desc(signalValue))
 # head(x)
-x[,c("chrom","start","end","peakname","score","signalValue","normalized_pvalue","qvalue","summitdist")] -> xdf
+x[,c("chrom","start","end","peakname","score","strand","signalValue","normalized_pvalue","qvalue","summitdist")] -> xdf
 mutate_at(xdf,vars("start","end","summitdist"),as.integer) -> xdf
 write.table(xdf,file=out_narrowPeak,
             sep="\t",

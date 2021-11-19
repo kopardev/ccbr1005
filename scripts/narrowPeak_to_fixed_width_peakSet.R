@@ -9,11 +9,11 @@ parser <- ArgumentParser(description="Convert narrowPeak output to fixedwidth pe
 
 parser$add_argument("-i", "--inputNarrowPeak", 
                     type="character", 
-                    help="narrowPeak input file",
+                    help="narrowPeak input file absolute full path",
                     required=TRUE)
 parser$add_argument("-o", "--outputNarrowPeak", 
                     type="character", 
-                    help="narrowPeak output file",
+                    help="narrowPeak output file absolute full path",
                     required=FALSE,
                     default=NULL)
 parser$add_argument("-t", "--tmpdir", 

@@ -8,7 +8,7 @@ parser <- ArgumentParser(description="Convert narrowPeak output to fixedwidth pe
 
 parser$add_argument("-i", "--inputNarrowPeaks", 
                     type="character", 
-                    help="fixed width narrowPeak input files from narrowPeak_to_fixed_width_peakSet.R",
+                    help="absolute fullpaths to fixed width narrowPeak input files from narrowPeak_to_fixed_width_peakSet.R",
                     required=TRUE)
 parser$add_argument("-p", "--inputPrefixes", 
                     type="character", 
@@ -16,7 +16,7 @@ parser$add_argument("-p", "--inputPrefixes",
                     required=TRUE)
 parser$add_argument("-o", "--outputNarrowPeak", 
                     type="character", 
-                    help="narrowPeak output file",
+                    help="absolute fullpath to narrowPeak output file",
                     required=TRUE)
 parser$add_argument("-t", "--tmpdir", 
                     type="character",
