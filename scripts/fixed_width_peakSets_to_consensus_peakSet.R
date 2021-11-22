@@ -53,6 +53,8 @@ narrowPeaks=unlist(strsplit("/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACse
 prefixes=unlist(strsplit("HCC2157_1,HCC2157_2",","))
 out_narrowPeak="HCC2157.genrich.consensus.narrowPeak"
 setwd(dirname(out_narrowPeak))
+norm_pvalue_threshold=5
+min_replicates=2
 } else {
   if(is.null(args$tmpdir)){
     tmpdir=setwd(dirname(out_narrowPeak))
@@ -204,6 +206,8 @@ for (i in 1:length(narrowPeaks)) {
 }
 keep_peaks=peaksoverlapcount[peaksoverlapcount$count >= min_replicates,]$peakname
 xdf3=xdf2[xdf2$peakname %in% keep_peaks,]
+xdf3$score=peaksoverlapcount[peaksoverlapcount$peakname %in% keep_peaks,]$count
+mutate_at(xdf3,vars("start","end","summitdist"),as.integer) -> xdf3
 write.table(xdf3,file=out_narrowPeak,
             sep="\t",
             row.names = FALSE,
