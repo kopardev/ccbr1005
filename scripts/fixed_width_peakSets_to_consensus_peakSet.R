@@ -49,10 +49,10 @@ prefixes=unlist(strsplit(args$inputPrefixes,","))
 out_narrowPeak=args$outputNarrowPeak
 
 if (debug==1){
-narrowPeaks=unlist(strsplit("/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/uniform_width_peaks/HCC2157_1.genrich.samplePeakSet.narrowPeak,/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/uniform_width_peaks/HCC2157_2.genrich.samplePeakSet.narrowPeak",","))
-prefixes=unlist(strsplit("HCC2157_1,HCC2157_2",sep=","))
+narrowPeaks=unlist(strsplit("/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/HCC2157_1.genrich.samplePeakSet.narrowPeak,/Volumes/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/HCC2157_2.genrich.samplePeakSet.narrowPeak",","))
+prefixes=unlist(strsplit("HCC2157_1,HCC2157_2",","))
 out_narrowPeak="HCC2157.genrich.consensus.narrowPeak"
-setwd(dirname(narrowPeak))
+setwd(dirname(out_narrowPeak))
 } else {
   if(is.null(args$tmpdir)){
     tmpdir=setwd(dirname(out_narrowPeak))
