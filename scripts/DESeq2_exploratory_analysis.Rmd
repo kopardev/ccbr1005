@@ -1,0 +1,394 @@
+---
+title: "DESeq2 DEG Analysis"
+# author: "Vishal Koparde, Ph.D."
+output:
+  html_document:
+    toc: true
+    toc_float: true
+# params:
+#   rawcountsmatrix: "/Volumes/Wolin/mESC_slam_analysis/find_mutation_101521/rsem/rsem.raw_counts_matrix.tsv"
+#   coldata: "/Volumes/Wolin/mESC_slam_analysis/find_mutation_101521/rsem/rsem.raw_counts_matrix.tsv.colData" # tab delimited file with header and 2 columns: sample_name, condition; samples with sample_name must exists in the raw counts matrix
+#   condition1: "KO"
+#   condition2: "WT" # contrasts is condition1 vs condition2 ... pay attention to the order of conditions
+#   indexcols: "gene_id,gene_name" # comma separated list of indexing columns eg. gene_id,gene_name
+#   cpm_cutoff: 1
+#   degoutdir: "/Volumes/Wolin/mESC_slam_analysis/find_mutation_101521/rsem/"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages(library("DESeq2"))
+suppressPackageStartupMessages(library("edgeR"))
+suppressPackageStartupMessages(library("tidyverse"))
+suppressPackageStartupMessages(library("dplyr"))
+suppressPackageStartupMessages(library("DT"))
+suppressPackageStartupMessages(library("reshape2"))
+suppressPackageStartupMessages(library("pander"))
+suppressPackageStartupMessages(library("plotly"))
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("ggfortify"))
+suppressPackageStartupMessages(library("ggrepel"))
+suppressPackageStartupMessages(library("vsn"))
+suppressPackageStartupMessages(library("EnhancedVolcano"))
+suppressPackageStartupMessages(library("ChIPseeker"))
+suppressPackageStartupMessages(library("TxDb.Hsapiens.UCSC.hg38.knownGene"))
+suppressPackageStartupMessages(library("org.Hs.eg.db"))
+mount="/Volumes/Ambs_ATACseq/"
+seqmetadata=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/exploratory_analysis/sequencing_metadata.tsv"),sep="\t",header=TRUE,strip.white = TRUE,check.names = FALSE,colClasses = "character")
+colnames(seqmetadata)=gsub(" ","",colnames(seqmetadata))
+degoutdir=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks")
+```
+
+
+## Sequencing MetaData
+
+```{r metadata,include=TRUE,echo=FALSE}
+pander(seqmetadata,style="rmarkdown")
+```
+
+
+
+
+
+
+```{r read_inputs, include=FALSE}
+
+# replicateName2sampleName<-function(replicateName){
+#   return(unlist(strsplit(x="BT549_1",split="_"))[1])
+# }
+
+
+# debug=0
+# if (debug==1){
+  rawcountsmatrix=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.counts.tsv")
+  # coldata=paste(mount,"/Ambs_ATACseq/analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks
+  # condition1="KO"
+  # condition2="WT"
+  excludecols=unlist(strsplit("Chr,Start,End,Strand,Length",","))
+  indexcols=unlist(strsplit("ensemblID,gene_name,mRNA_length",","))
+  # indexcols=unlist(strsplit("gene_id,gene_name",",")) # comma separated list of indexing columns eg. gene_id,gene_name
+  cpm_cutoff=1
+  degoutdir="/Users/kopardevn/Documents/Projects/rbl4/find_mutations_101521/DEGs"
+# } else {
+#   rawcountsmatrix=params$rawcountsmatrix
+#   coldata=params$coldata
+#   indexcols=unlist(strsplit(params$indexcols,","))
+#   if (length(params$excludecols)==0){
+#    excludecols=c()
+#   } else {
+#    excludecols=unlist(strsplit(params$excludecols,","))
+#   }
+#   condition1=params$condition1
+#   condition2=params$condition2
+#   cpm_cutoff=params$cpm_cutoff
+#   degoutdir=params$degoutdir
+# }
+
+
+countsdf=read.csv(file=rawcountsmatrix,header=TRUE,sep="\t",comment.char = "#",check.names = FALSE,strip.white = TRUE) 
+countmatrix=countsdf %>% select(-all_of(excludecols)) %>% column_to_rownames(var="Geneid")
+cpm_cm=cpm(countmatrix)
+
+cpm_cm_melt=reshape2::melt(cpm_cm)
+colnames(cpm_cm_melt)=c("peakID","replicateName","cpm")
+cpm_cm_melt %>% separate(col="replicateName",into=c("sampleName","replicateID"),sep="_",remove = FALSE) -> cpm_cm_melt
+cpm_cm_melt$logcpm=log2(cpm_cm_melt$cpm)
+
+# create sampleinfo
+sampleinfo=data.frame(sample_name=colnames(countmatrix))
+sampleinfo %>% separate(col="sample_name",into=c("cellline","replicateID"),remove = FALSE) -> sampleinfo
+sampleinfo$SampleName=sampleinfo$cellline
+sampleinfo=merge(sampleinfo,seqmetadata,by="SampleName")
+sampleinfo %>% select(-all_of(c("SampleName"))) -> sampleinfo
+sampleinfo$condition=gsub(" ","",sampleinfo$MolecularSubtype)
+sampleinfo$condition=gsub("\\+","_positive",sampleinfo$condition)
+# sampleinfo
+```
+
+
+```{r karyo,echo=FALSE}
+np=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.narrowPeak"),sep="\t",header=FALSE)
+colnames(np)=c("chr","start","end","name","score","strand","signalValue","normalized_pvalue","qvalue","summitDist")
+peaks=makeGRangesFromDataFrame(np,keep.extra.columns=TRUE)
+covplot(peaks,weightCol = c("score"))
+```
+
+```{r annotate,echo=FALSE}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+peakAnno <- annotatePeak(peaks, tssRegion=c(-2000, 200),
+                         TxDb=txdb, annoDb="org.Hs.eg.db")
+plotAnnoPie(peakAnno)
+pa=(as.data.frame(peakAnno))
+pa$shortAnno=stringr::word(pa$annotation,1)
+names(pa)[names(pa) == 'name'] <- 'peakID'
+write.table(pa,file=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.narrowPeak.annotations.tsv"),quote = FALSE,sep="\t",row.names = FALSE,col.names = TRUE)
+```
+
+
+```{r vennplot,echo=FALSE}
+vennpie(peakAnno)
+```
+
+```{r TSSdist,echo=FALSE}
+plotDistToTSS(peakAnno,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS")
+```
+
+```{r cpmprefilter,echo=FALSE}
+a=ggplot(cpm_cm_melt,aes(x=replicateName,y=logcpm))+
+  geom_boxplot(aes(fill=as.factor(sampleName)))+
+  theme_classic()+
+  theme(legend.title = element_blank(),axis.text.x = element_text(angle = 90),legend.text=element_text(size=6),legend.position = "none")
+  # theme_classic()
+print(a)
+```
+
+```{r cpmdist,echo=FALSE}
+x=as.data.frame(rowSums(cpm_cm>1))
+colnames(x)=c("n")
+ggplot(x,aes(x=n))+geom_histogram(bins=50)+theme_classic()+xlab("number of replicates with cpm>1")+ylab("frequency")
+```
+
+```{r cpmdist2,echo=FALSE}
+ggplot(cpm_cm_melt,aes(x=logcpm))+geom_density()
+```
+
+
+## Library Size
+```{r libsize, echo=FALSE, include=TRUE}
+p <- ggplot(sampleinfo,aes(sample_name,library_size,fill=condition))+
+  geom_bar(stat="identity",aes(col=condition))+
+  theme_classic()+
+  theme(legend.title = element_blank(),axis.text.x = element_text(angle = 90),legend.text=element_text(size=6),legend.position = "none")
+p <- p + ylab("No. of nicking sites in regions of interest")
+print(p)
+```
+
+Colored by ethnicity
+
+```{r libsize2, echo=FALSE, include=TRUE}
+p <- ggplot(sampleinfo,aes(sample_name,library_size,fill=Ethnicity))+
+  geom_bar(stat="identity",aes(col=Ethnicity))+
+  theme_classic()+
+  theme(legend.title = element_blank(),axis.text.x = element_text(angle = 90),legend.text=element_text(size=6),legend.position = "top")
+p <- p + ylab("No. of nicking sites in regions of interest")
+print(p)
+```
+
+## design = ~ 1
+
+```{r dds,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+  se <- SummarizedExperiment(list(counts=as.matrix(countmatrix)))
+  # head(assay(se))
+
+  # convert SE object to DESeqDataSet
+  dds <- DESeqDataSet( se, design = ~ 1 )
+dds <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
+                                design ~ 1)
+# dds <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
+#                                 colData = sampleinfo[,c("sample_name","condition")],
+#                                 design = ~ condition)
+# dds2 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
+#                                 colData = sampleinfo[,c("sample_name","Ethnicity")],
+#                                 design = ~ Ethnicity)
+```
+
+## Calculating size factors
+
+```{r sizeFactors,echo=FALSE}
+dds <- estimateSizeFactors( dds )
+pander(as.data.frame(sizeFactors(dds)) %>% rownames_to_column(var="sample"))
+# plot(sizeFactors(dds), colSums(counts(dds)))
+# abline(lm(colSums(counts(dds)) ~ sizeFactors(dds) + 0))
+x=data.frame(sf=sizeFactors(dds),cs=colSums(counts(dds)))
+ggplot(x,aes(x=sf,y=cs,label=rownames(x)))+geom_point(aes(col=as.factor(sampleinfo$condition)))+geom_text_repel(max.overlaps = 10)+theme_light()+ theme(legend.title = element_blank()) -> p
+reg=lm(colSums(counts(dds)) ~ sizeFactors(dds) + 0)
+p <- p + geom_abline(intercept = 0, slope=reg$coefficients[[1]], color="green", size=1, linetype="dashed")
+p <- p + xlab("SizeFactors") + ylab("ColSums")
+print(p)
+```
+
+```{r deseq2,echo=FALSE,include=FALSE}
+dds <- DESeq(dds)
+
+# # vst
+# vstd <- vst(dds)
+# assayvstd = as.data.frame(assay(vstd))
+# rlog for PCA
+# rld <- rlog(dds)
+rld <- vst(dds)
+assayrld = as.data.frame(assay(rld))
+assayrld$row_variance = rowVars(as.matrix(assayrld))
+assayrld = arrange(assayrld,desc(row_variance)) 
+zero_variance_rows=assayrld$row_variance<1e-5
+assayrld$row_variance = NULL
+assayrld = assayrld[!zero_variance_rows,]
+assayrld = assayrld[1:500,]
+pca=prcomp(t(assayrld),scale. = T)
+m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+## PCA (design = ~ 1 )
+
+```{r plotpca, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo$Ethnicity)
+p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("PCA")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+## Separation by Ethnicity (design = ~ 1)
+
+
+```{r dds2,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+
+dds2 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
+                                colData = sampleinfo[,c("sample_name","Ethnicity")],
+                                design = ~ Ethnicity)
+dds2 <- DESeq(dds2)
+# deg results
+res_ethnicity <- results(dds2)
+as.data.frame(res_ethnicity) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res_ethnicity
+
+
+# res_df <- separate(res_df,col="gene",into=c("gene_id","gene_name"),sep="##")
+log2FC2FC<-function(log2FC){
+  if (log2FC>0){
+    FC=2^log2FC
+  } else {
+    FC=-1/2^log2FC
+  }
+  return(FC)
+}
+res_ethnicity$FoldChange=lapply(res_ethnicity$log2FoldChange,log2FC2FC)
+names(res_ethnicity)[names(res_ethnicity) == 'padj'] <- 'FDR'
+
+
+condition2=levels(dds2$Ethnicity)[1]
+condition1=levels(dds2$Ethnicity)[2]
+contrast=paste(condition1,"vs",condition2,sep="_")
+tmp_res_df=res_ethnicity[,c("peakID","log2FoldChange","FDR")]
+colnames(tmp_res_df)=c("peakID",paste(contrast,"all_samples","log2FoldChange",sep="_"),paste(contrast,"all_samples","FDR",sep = "_"))
+
+pa=merge(pa,tmp_res_df,by=c("peakID"))
+
+degoutfn=paste("DEG",contrast,"allsamples","tsv",sep=".")
+
+degoutfile=paste(degoutdir,degoutfn,sep="/")
+# res_df_out <- apply(res_df,2,as.character)
+# write.table(res_df,file=degoutfile,row.names = FALSE,col.names = TRUE,sep="\t",quote = FALSE)
+
+# # vst
+# vstd <- vst(dds)
+# assayvstd = as.data.frame(assay(vstd))
+# rlog for PCA
+# rld <- rlog(dds)
+rld <- vst(dds)
+assayrld = as.data.frame(assay(rld))
+assayrld$row_variance = rowVars(as.matrix(assayrld))
+assayrld = arrange(assayrld,desc(row_variance)) 
+zero_variance_rows=assayrld$row_variance<1e-5
+assayrld$row_variance = NULL
+assayrld = assayrld[!zero_variance_rows,]
+assayrld = assayrld[1:500,]
+pca=prcomp(t(assayrld),scale. = T)
+m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+
+## PCA (design = ~ Ethnicity )
+
+```{r plotpca, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo$Ethnicity)
+p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("PCA")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+## MAPlot
+
+```{r ma, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide'}
+p<-DESeq2::plotMA(dds2)
+print(p)
+```
+
+
+## DEG list
+
+```{r degstats,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+regulation_results=data.frame("Up",
+                              sum(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange > 1),
+                              paste(pa[head(res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange > 1),]$peakID,5) %in% pa$peakID,]$SYMBOL,collapse=", "))
+colnames(regulation_results)=c("Regulation","Number of Genes","Top5")
+regulation_results[nrow(regulation_results)+1,]=c("Down",
+                                                  sum(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange < -1),
+                                                  paste(head(res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange < -1),]$peakID,5),collapse=", "))
+pander(regulation_results,style="rmarkdown")
+```
+
+```{r degtable,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+
+display_df=res_df[,c("gene_id","gene_name","log2FoldChange","FoldChange","FDR")]
+
+DT::datatable(display_df,options = list(pageLength = 10)) %>% 
+  formatRound(columns=c("log2FoldChange","FoldChange"), digits=2) %>% 
+  formatSignif(columns = c('FDR'), digits = 3)
+```
+
+
+## VolcanoPlot
+
+```{r volcano,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
+# lab = res_df$gene_name,
+p <-  EnhancedVolcano::EnhancedVolcano(res_df, 
+                lab=res_df$peakID,
+                x = "log2FoldChange", 
+                y = "padj", 
+                ylab = bquote(~-Log[10]~FDR),
+                FCcutoff = 1, 
+                xlim=c(min(res_df$log2FoldChange)-1,max(res_df$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res_df$padj), na.rm=TRUE) + 1),
+                pCutoff = 0.05,
+                legendPosition = 'top',
+                pointSize = 0.8,
+                labSize = 4,
+                legendLabSize = 8,
+                legendIconSize = 2,
+                legendLabels = c("NS","log2FC > |1|","FDR < 0.05","significant (FDR < 0.05) & log2FC > |1|"),
+                title="",titleLabSize=0,
+                subtitle = "",subtitleLabSize = 1,
+                caption = "",captionLabSize=0)
+print(p)
+```
