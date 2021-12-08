@@ -33,6 +33,7 @@ suppressPackageStartupMessages(library("EnhancedVolcano"))
 suppressPackageStartupMessages(library("ChIPseeker"))
 suppressPackageStartupMessages(library("TxDb.Hsapiens.UCSC.hg38.knownGene"))
 suppressPackageStartupMessages(library("org.Hs.eg.db"))
+suppressPackageStartupMessages(library("umap"))
 mount="/Volumes/Ambs_ATACseq/"
 seqmetadata=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/exploratory_analysis/sequencing_metadata.tsv"),sep="\t",header=TRUE,strip.white = TRUE,check.names = FALSE,colClasses = "character")
 colnames(seqmetadata)=gsub(" ","",colnames(seqmetadata))
@@ -41,6 +42,9 @@ degoutdir=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genr
 
 
 ## Sequencing MetaData
+
+Total of 18 celllines. Each cellline has 2 replicates. Here is the metadata for all 36 samples.
+
 
 ```{r metadata,include=TRUE,echo=FALSE}
 pander(seqmetadata,style="rmarkdown")
@@ -65,10 +69,9 @@ pander(seqmetadata,style="rmarkdown")
   # condition1="KO"
   # condition2="WT"
   excludecols=unlist(strsplit("Chr,Start,End,Strand,Length",","))
-  indexcols=unlist(strsplit("ensemblID,gene_name,mRNA_length",","))
+  indexcols=unlist(strsplit("Geneid",","))
   # indexcols=unlist(strsplit("gene_id,gene_name",",")) # comma separated list of indexing columns eg. gene_id,gene_name
   cpm_cutoff=1
-  degoutdir="/Users/kopardevn/Documents/Projects/rbl4/find_mutations_101521/DEGs"
 # } else {
 #   rawcountsmatrix=params$rawcountsmatrix
 #   coldata=params$coldata
@@ -86,12 +89,12 @@ pander(seqmetadata,style="rmarkdown")
 
 
 countsdf=read.csv(file=rawcountsmatrix,header=TRUE,sep="\t",comment.char = "#",check.names = FALSE,strip.white = TRUE) 
-countmatrix=countsdf %>% select(-all_of(excludecols)) %>% column_to_rownames(var="Geneid")
+countmatrix=countsdf %>% dplyr::select(-all_of(excludecols)) %>% column_to_rownames(var="Geneid")
 cpm_cm=cpm(countmatrix)
 
 cpm_cm_melt=reshape2::melt(cpm_cm)
 colnames(cpm_cm_melt)=c("peakID","replicateName","cpm")
-cpm_cm_melt %>% separate(col="replicateName",into=c("sampleName","replicateID"),sep="_",remove = FALSE) -> cpm_cm_melt
+cpm_cm_melt %>% tidyr::separate(col="replicateName",into=c("sampleName","replicateID"),sep="_",remove = FALSE) -> cpm_cm_melt
 cpm_cm_melt$logcpm=log2(cpm_cm_melt$cpm)
 
 # create sampleinfo
@@ -99,29 +102,46 @@ sampleinfo=data.frame(sample_name=colnames(countmatrix))
 sampleinfo %>% separate(col="sample_name",into=c("cellline","replicateID"),remove = FALSE) -> sampleinfo
 sampleinfo$SampleName=sampleinfo$cellline
 sampleinfo=merge(sampleinfo,seqmetadata,by="SampleName")
-sampleinfo %>% select(-all_of(c("SampleName"))) -> sampleinfo
+sampleinfo %>% dplyr::select(-all_of(c("SampleName"))) -> sampleinfo
 sampleinfo$condition=gsub(" ","",sampleinfo$MolecularSubtype)
 sampleinfo$condition=gsub("\\+","_positive",sampleinfo$condition)
+sampleinfo$library_size=colSums(countmatrix)/1e6
 # sampleinfo
-```
 
-
-```{r karyo,echo=FALSE}
+# merged peaks
 np=read.csv(paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.narrowPeak"),sep="\t",header=FALSE)
 colnames(np)=c("chr","start","end","name","score","strand","signalValue","normalized_pvalue","qvalue","summitDist")
 peaks=makeGRangesFromDataFrame(np,keep.extra.columns=TRUE)
-covplot(peaks,weightCol = c("score"))
-```
-
-```{r annotate,echo=FALSE}
+npeaks=nrow(peaks)
 txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
 peakAnno <- annotatePeak(peaks, tssRegion=c(-2000, 200),
                          TxDb=txdb, annoDb="org.Hs.eg.db")
-plotAnnoPie(peakAnno)
 pa=(as.data.frame(peakAnno))
 pa$shortAnno=stringr::word(pa$annotation,1)
 names(pa)[names(pa) == 'name'] <- 'peakID'
 write.table(pa,file=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.narrowPeak.annotations.tsv"),quote = FALSE,sep="\t",row.names = FALSE,col.names = TRUE)
+
+save.image(file=paste(degoutdir,"Rdata",sep = "/"))
+```
+
+## Regions of interest
+
+Total number of merged peaks or regions of interest: `r npeaks`.
+
+Peak calls from each replicate were converted to fixed width peak calls of 500bp width around the summit. Peaks are sorted by normalized p-values and peaks overlaping with lower normalized-pvalues are iteratively excluded. Normalized p-values are calculated as per the pan-genome ATACseq [paper](https://doi.org/10.1126/science.aav1898). To find consensus peaks, replicate peak calls are concatenated and re-sorted by normalized p-value and then the same iteratively approach is used to eliminate overlapping peaks. Peaks wit no overlap between replicates are excluded.
+
+P-values for the consensus peak calls for each of the 18 cell lines were re-normalized, concatenated, re-sorted and overlap were eliminated as per our previous approach. All peaks (even those that are only reported in 1 cellline) are retained. This results in a total of `r npeaks` peaks.
+
+These peaks are read-in and annotated using ChIPseeker:
+
+```{r karyo,echo=FALSE}
+# covplot(peaks,weightCol = c("score"))
+```
+
+### Annnotations
+
+```{r annotate,echo=FALSE}
+plotAnnoPie(peakAnno)
 ```
 
 
@@ -133,6 +153,10 @@ vennpie(peakAnno)
 plotDistToTSS(peakAnno,
               title="Distribution of transcription factor-binding loci\nrelative to TSS")
 ```
+
+### CPM distributions
+
+Tn5 nicking sites for each of the 36 replicates are calculated for each of the `r npeaks` peaks using featureCounts from the SubRead suite of tools. This count matrix is read-in and CPM normalized to visualize distribution like:
 
 ```{r cpmprefilter,echo=FALSE}
 a=ggplot(cpm_cm_melt,aes(x=replicateName,y=logcpm))+
@@ -154,7 +178,10 @@ ggplot(cpm_cm_melt,aes(x=logcpm))+geom_density()
 ```
 
 
-## Library Size
+###  Library Size
+
+Library Size is defined as the total number of Tn5 nicking sites in all of the `r npeaks` peaks for each sample.
+
 ```{r libsize, echo=FALSE, include=TRUE}
 p <- ggplot(sampleinfo,aes(sample_name,library_size,fill=condition))+
   geom_bar(stat="identity",aes(col=condition))+
@@ -164,7 +191,7 @@ p <- p + ylab("No. of nicking sites in regions of interest")
 print(p)
 ```
 
-Colored by ethnicity
+Coloring by ethnicity
 
 ```{r libsize2, echo=FALSE, include=TRUE}
 p <- ggplot(sampleinfo,aes(sample_name,library_size,fill=Ethnicity))+
@@ -173,9 +200,12 @@ p <- ggplot(sampleinfo,aes(sample_name,library_size,fill=Ethnicity))+
   theme(legend.title = element_blank(),axis.text.x = element_text(angle = 90),legend.text=element_text(size=6),legend.position = "top")
 p <- p + ylab("No. of nicking sites in regions of interest")
 print(p)
+save.image(file=paste(degoutdir,"Rdata",sep = "/"))
 ```
 
-## design = ~ 1
+## Design1 
+
+DESeq2 object is created using `design = ~ 1` to get preliminary PCA plots.
 
 ```{r dds,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
   se <- SummarizedExperiment(list(counts=as.matrix(countmatrix)))
@@ -183,8 +213,6 @@ print(p)
 
   # convert SE object to DESeqDataSet
   dds <- DESeqDataSet( se, design = ~ 1 )
-dds <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
-                                design ~ 1)
 # dds <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
 #                                 colData = sampleinfo[,c("sample_name","condition")],
 #                                 design = ~ condition)
@@ -193,7 +221,9 @@ dds <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
 #                                 design = ~ Ethnicity)
 ```
 
-## Calculating size factors
+### Design1:Size Factors
+
+DESeq2 is used to calculated size factors for normalization.
 
 ```{r sizeFactors,echo=FALSE}
 dds <- estimateSizeFactors( dds )
@@ -218,25 +248,38 @@ dds <- DESeq(dds)
 # rld <- rlog(dds)
 rld <- vst(dds)
 assayrld = as.data.frame(assay(rld))
+assayrld %>% rownames_to_column(var="peakID") -> assayrld_df
+write.table(assayrld_df,file=paste(degoutdir,"vst_counts.tsv",sep="/"),row.names = FALSE,col.names = TRUE, quote = FALSE,sep = "\t")
 assayrld$row_variance = rowVars(as.matrix(assayrld))
+
 assayrld = arrange(assayrld,desc(row_variance)) 
 zero_variance_rows=assayrld$row_variance<1e-5
 assayrld$row_variance = NULL
 assayrld = assayrld[!zero_variance_rows,]
-assayrld = assayrld[1:500,]
+assayrld_original = assayrld
+
+
+
+```
+
+### Design1:PCA
+
+PCA is plotted with:
+  * all peaks
+  * only 50k peaks with most variance accross all replicates from all cell lines.
+  
+
+```{r plotpca, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+# assayrld = assayrld_original[1:200000,]
+assayrld = assayrld_original
 pca=prcomp(t(assayrld),scale. = T)
 m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
 m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
 m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
 xlab=paste0("PC1(",m.pc1,"%)")
 ylab=paste0("PC2(",m.pc2,"%)")
-```
-
-## PCA (design = ~ 1 )
-
-```{r plotpca, echo=FALSE}
-# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
-# print(p)
 MolecularSubtype=as.factor(sampleinfo$MolecularSubtype)
 Ethnicity=as.factor(sampleinfo$Ethnicity)
 p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
@@ -244,7 +287,7 @@ p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
   geom_text_repel(max.overlaps = 10,size=2)+
   xlab(xlab)+ylab(ylab)+
   theme_light(base_size = 10)+
-  ggtitle("PCA")+
+  ggtitle("PCA w all peaks")+
   theme_light()
   # geom_point(aes(col=condition,
   #                shape=condition))+scale_shape_manual(values=seq(0,15))+
@@ -252,8 +295,54 @@ p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
 print(p)
 ```
 
+```{r plotpca2, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+assayrld = assayrld_original[1:50000,]
+# assayrld = assayrld_original
+pca=prcomp(t(assayrld),scale. = T)
+m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+MolecularSubtype=as.factor(sampleinfo$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo$Ethnicity)
+p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("PCA top 50k most variance peaks")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
 
-## Separation by Ethnicity (design = ~ 1)
+print(p)
+```
+
+### Design1:UMAP
+
+UMAP is also used to check if the method of dimensionality reduction has any effect.
+
+
+```{r umap,echo=FALSE}
+rld.umap=umap(t(assayrld_original))
+umap_layout=as.data.frame(rld.umap$layout)
+colnames(umap_layout)=c("UMAP1","UMAP2")
+rownames_to_column(umap_layout,var="ReplicateID")->umap_layout
+p=ggplot(umap_layout,aes(x=UMAP1,y=UMAP2,label=ReplicateID))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  theme_light(base_size = 10)+
+  ggtitle("UMAP")+
+  theme_light()
+print(p)
+```
+
+## Design2
+
+Trying to design the DESeq2 run to separate samples by Ethnicity. design ~ Ethnicity  (all cell lines).
 
 
 ```{r dds2,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
@@ -266,31 +355,29 @@ dds2 <- DESeq(dds2)
 res_ethnicity <- results(dds2)
 as.data.frame(res_ethnicity) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res_ethnicity
 
+# log2FC2FC<-function(log2FC){
+#   if (log2FC>0){
+#     FC=2^log2FC
+#   } else {
+#     FC=-1/2^log2FC
+#   }
+#   return(FC)
+# }
+# res_ethnicity$FoldChange=lapply(res_ethnicity$log2FoldChange,log2FC2FC)
 
-# res_df <- separate(res_df,col="gene",into=c("gene_id","gene_name"),sep="##")
-log2FC2FC<-function(log2FC){
-  if (log2FC>0){
-    FC=2^log2FC
-  } else {
-    FC=-1/2^log2FC
-  }
-  return(FC)
-}
-res_ethnicity$FoldChange=lapply(res_ethnicity$log2FoldChange,log2FC2FC)
 names(res_ethnicity)[names(res_ethnicity) == 'padj'] <- 'FDR'
-
+res_ethnicity=merge(res_ethnicity,pa,by="peakID")
 
 condition2=levels(dds2$Ethnicity)[1]
 condition1=levels(dds2$Ethnicity)[2]
-contrast=paste(condition1,"vs",condition2,sep="_")
+contrast=paste(condition1,"vs",condition2,"all_celllines",sep="_")
 tmp_res_df=res_ethnicity[,c("peakID","log2FoldChange","FDR")]
-colnames(tmp_res_df)=c("peakID",paste(contrast,"all_samples","log2FoldChange",sep="_"),paste(contrast,"all_samples","FDR",sep = "_"))
+colnames(tmp_res_df)=c("peakID",paste(contrast,"log2FoldChange",sep="_"),paste(contrast,"FDR",sep = "_"))
 
 pa=merge(pa,tmp_res_df,by=c("peakID"))
 
-degoutfn=paste("DEG",contrast,"allsamples","tsv",sep=".")
-
-degoutfile=paste(degoutdir,degoutfn,sep="/")
+# degoutfn=paste("DEG",contrast,"allsamples","tsv",sep=".")
+# degoutfile=paste(degoutdir,degoutfn,sep="/")
 # res_df_out <- apply(res_df,2,as.character)
 # write.table(res_df,file=degoutfile,row.names = FALSE,col.names = TRUE,sep="\t",quote = FALSE)
 
@@ -299,36 +386,39 @@ degoutfile=paste(degoutdir,degoutfn,sep="/")
 # assayvstd = as.data.frame(assay(vstd))
 # rlog for PCA
 # rld <- rlog(dds)
-rld <- vst(dds)
-assayrld = as.data.frame(assay(rld))
-assayrld$row_variance = rowVars(as.matrix(assayrld))
-assayrld = arrange(assayrld,desc(row_variance)) 
-zero_variance_rows=assayrld$row_variance<1e-5
-assayrld$row_variance = NULL
-assayrld = assayrld[!zero_variance_rows,]
-assayrld = assayrld[1:500,]
-pca=prcomp(t(assayrld),scale. = T)
-m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
-m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
-m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+rld2 <- vst(dds2)
+assayrld2 = as.data.frame(assay(rld2))
+assayrld2$row_variance = rowVars(as.matrix(assayrld2))
+assayrld2 = arrange(assayrld2,desc(row_variance)) 
+zero_variance_rows=assayrld2$row_variance<1e-5
+assayrld2$row_variance = NULL
+assayrld2 = assayrld2[!zero_variance_rows,]
+assrayrld2_original=assayrld2
+assayrld2 = assayrld2[1:50000,]
+pca2=prcomp(t(assayrld2),scale. = T)
+m.pc1 = round(pca2$sdev[1]^2/sum(pca2$sdev^2)*100,2)
+m.pc2 = round(pca2$sdev[2]^2/sum(pca2$sdev^2)*100,2)
+m.pc3 = round(pca2$sdev[3]^2/sum(pca2$sdev^2)*100,2)
 xlab=paste0("PC1(",m.pc1,"%)")
 ylab=paste0("PC2(",m.pc2,"%)")
 ```
 
 
-## PCA (design = ~ Ethnicity )
+### Design2:PCA
 
-```{r plotpca, echo=FALSE}
+Contrast = `contrast`
+
+```{r plotpca2.2, echo=FALSE}
 # p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
 # print(p)
 MolecularSubtype=as.factor(sampleinfo$MolecularSubtype)
 Ethnicity=as.factor(sampleinfo$Ethnicity)
-p <- ggplot(pca$x,aes(x=PC1,y=PC2,label=rownames(pca$x)))+
+p <- ggplot(pca2$x,aes(x=PC1,y=PC2,label=rownames(pca2$x)))+
   geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
   geom_text_repel(max.overlaps = 10,size=2)+
   xlab(xlab)+ylab(ylab)+
   theme_light(base_size = 10)+
-  ggtitle("PCA")+
+  ggtitle("pca2 top 50K peaks with most variance")+
   theme_light()
   # geom_point(aes(col=condition,
   #                shape=condition))+scale_shape_manual(values=seq(0,15))+
@@ -337,7 +427,7 @@ print(p)
 ```
 
 
-## MAPlot
+### Design2:MAPlot
 
 ```{r ma, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide'}
 p<-DESeq2::plotMA(dds2)
@@ -345,41 +435,68 @@ print(p)
 ```
 
 
-## DEG list
+### Design2:DEGresults
+
+Here, DEG results represent differentially open ATAC-seq peaks. Up are peaks that significantly more open in `r condition1`, while Down show peaks that are significantly more open in `r condition2`. These DEG peaks are merged with peak annotations to filter significantly variable peaks in known promoter regions are top 10 such promoter region peaks are shown below:
 
 ```{r degstats,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
-regulation_results=data.frame("Up",
-                              sum(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange > 1),
-                              paste(pa[head(res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange > 1),]$peakID,5) %in% pa$peakID,]$SYMBOL,collapse=", "))
-colnames(regulation_results)=c("Regulation","Number of Genes","Top5")
-regulation_results[nrow(regulation_results)+1,]=c("Down",
-                                                  sum(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange < -1),
-                                                  paste(head(res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange < -1),]$peakID,5),collapse=", "))
+get_topx_excluding_repeats<-function(list_of_symbols,x=10){
+  l=c()
+  count=0
+  for (i in list_of_symbols){
+    if (!(i %in% l)){
+      l=c(l,i)
+      count=count+1
+      if (count==x) {
+        break
+      }
+    }
+  }
+return(l)  
+}
+
+
+
+regulation_results=data.frame(matrix(ncol = 3, nrow = 0))
+colnames(regulation_results)=c("Regulation","Number of Peaks","Top10 genes with Promoter Peaks")
+
+res_ethnicity_up=res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange > 1),]
+n_up=nrow(res_ethnicity_up)
+res_ethnicity_up_promoter=subset(res_ethnicity_up,shortAnno %in% c("Promoter"))
+res_ethnicity_up_promoter=arrange(res_ethnicity_up_promoter,desc(log2FoldChange))
+
+# get top 10 genes excluding repeats
+top10_up=get_topx_excluding_repeats(res_ethnicity_up_promoter$SYMBOL,10)
+# top10_up
+
+regulation_results[nrow(regulation_results)+1,]=c("UP",n_up,paste(top10_up,collapse = ","))
+
+res_ethnicity_down=res_ethnicity[(res_ethnicity$FDR<0.05 & res_ethnicity$log2FoldChange < -1),]
+n_down=nrow(res_ethnicity_down)
+res_ethnicity_down_promoter=subset(res_ethnicity_down,shortAnno %in% c("Promoter"))
+res_ethnicity_down_promoter=arrange(res_ethnicity_down_promoter,log2FoldChange)
+top10_down=get_topx_excluding_repeats(res_ethnicity_down_promoter$SYMBOL,10)
+regulation_results[nrow(regulation_results)+1,]=c("DOWN",n_down,paste(top10_down,collapse = ","))
+
+
 pander(regulation_results,style="rmarkdown")
 ```
 
-```{r degtable,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
 
-display_df=res_df[,c("gene_id","gene_name","log2FoldChange","FoldChange","FDR")]
+### Design2:VolcanoPlot
 
-DT::datatable(display_df,options = list(pageLength = 10)) %>% 
-  formatRound(columns=c("log2FoldChange","FoldChange"), digits=2) %>% 
-  formatSignif(columns = c('FDR'), digits = 3)
-```
-
-
-## VolcanoPlot
+VolcanoPlot include are differentially open peaks (promoter and other regions). Labels denote the nearest annotated gene.
 
 ```{r volcano,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
 # lab = res_df$gene_name,
-p <-  EnhancedVolcano::EnhancedVolcano(res_df, 
-                lab=res_df$peakID,
+p <-  EnhancedVolcano::EnhancedVolcano(res_ethnicity, 
+                lab=res_ethnicity$SYMBOL,
                 x = "log2FoldChange", 
-                y = "padj", 
+                y = "FDR", 
                 ylab = bquote(~-Log[10]~FDR),
                 FCcutoff = 1, 
-                xlim=c(min(res_df$log2FoldChange)-1,max(res_df$log2FoldChange)+1),
-                ylim= c(0, max(-log10(res_df$padj), na.rm=TRUE) + 1),
+                xlim=c(min(res_ethnicity$log2FoldChange)-1,max(res_ethnicity$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res_ethnicity$FDR), na.rm=TRUE) + 1),
                 pCutoff = 0.05,
                 legendPosition = 'top',
                 pointSize = 0.8,
@@ -391,4 +508,648 @@ p <-  EnhancedVolcano::EnhancedVolcano(res_df,
                 subtitle = "",subtitleLabSize = 1,
                 caption = "",captionLabSize=0)
 print(p)
+```
+
+
+## Design3
+
+All samples belonging to the Molecular subtypes other than:
+  * Triple Negative Basal A
+  * Triple Negative Basal B
+  * Triple Negative Claudin low
+are excluded for this design.
+
+
+```{r filter,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+sampleinfo2=sampleinfo[grepl("Triple",sampleinfo$MolecularSubtype),]
+triple_only_replicates=sampleinfo2$sample_name
+countmatrix2=countmatrix[,triple_only_replicates]
+cpm_cm2=cpm(countmatrix2)
+keep=rowSums2(cpm_cm2>1)>2
+countmatrix2=countmatrix2[keep,]
+dds3 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix2),
+                                colData = sampleinfo2[,c("sample_name","Ethnicity")],
+                                design = ~ Ethnicity)
+dds3 <- DESeq(dds3)
+# deg results
+res_ethnicity3 <- results(dds3)
+as.data.frame(res_ethnicity3) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res_ethnicity3
+
+names(res_ethnicity3)[names(res_ethnicity3) == 'padj'] <- 'FDR'
+res_ethnicity3=merge(res_ethnicity3,pa,by="peakID")
+
+condition2=levels(dds3$Ethnicity)[1]
+condition1=levels(dds3$Ethnicity)[2]
+contrast=paste(condition1,"vs",condition2,"TN_celllines",sep="_")
+tmp_res_df=res_ethnicity3[,c("peakID","log2FoldChange","FDR")]
+colnames(tmp_res_df)=c("peakID",paste(contrast,"log2FoldChange",sep="_"),paste(contrast,"FDR",sep = "_"))
+
+pa=merge(pa,tmp_res_df,by=c("peakID"))
+
+rld3 <- vst(dds3)
+assayrld3 = as.data.frame(assay(rld3))
+assayrld3$row_variance = rowVars(as.matrix(assayrld3))
+assayrld3 = arrange(assayrld3,desc(row_variance)) 
+zero_variance_rows=assayrld3$row_variance<1e-5
+table(zero_variance_rows)
+assayrld3$row_variance = NULL
+assayrld3 = assayrld3[!zero_variance_rows,]
+assayrld3_original=assayrld3
+assayrld3 = assayrld3[1:50000,]
+pca3=prcomp(t(assayrld3),scale. = T)
+m.pc1 = round(pca3$sdev[1]^2/sum(pca3$sdev^2)*100,2)
+m.pc2 = round(pca3$sdev[2]^2/sum(pca3$sdev^2)*100,2)
+m.pc3 = round(pca3$sdev[3]^2/sum(pca3$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+
+### Design3:PCA
+
+PCA for  (design = ~ Ethnicity; Triple Negative cell lines only)
+
+Contrast = `r contrast`
+
+```{r plotpca3, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo2$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo2$Ethnicity)
+p <- ggplot(pca3$x,aes(x=PC1,y=PC2,label=rownames(pca3$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("pca2 top 50K peaks with most variance")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+### Design3:DEGresults 
+
+Here, DEG results represent differentially open ATAC-seq peaks. Up are peaks that significantly more open in `r condition1`, while Down show peaks that are significantly more open in `r condition2`. These DEG peaks are merged with peak annotations to filter significantly variable peaks in known promoter regions are top 10 such promoter region peaks are shown below:
+
+```{r degstats2,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+get_topx_excluding_repeats<-function(list_of_symbols,x=10){
+  l=c()
+  count=0
+  for (i in list_of_symbols){
+    if (!(i %in% l)){
+      l=c(l,i)
+      count=count+1
+      if (count==x) {
+        break
+      }
+    }
+  }
+return(l)  
+}
+
+
+
+regulation_results=data.frame(matrix(ncol = 3, nrow = 0))
+colnames(regulation_results)=c("Regulation","Number of Peaks","Top10 genes with Promoter Peaks")
+
+res_ethnicity3_up=res_ethnicity3[(res_ethnicity3$FDR<0.05 & res_ethnicity3$log2FoldChange > 1),]
+n_up=nrow(res_ethnicity3_up)
+res_ethnicity3_up_promoter=subset(res_ethnicity3_up,shortAnno %in% c("Promoter"))
+res_ethnicity3_up_promoter=arrange(res_ethnicity3_up_promoter,desc(log2FoldChange))
+
+# get top 10 genes excluding repeats
+top10_up=get_topx_excluding_repeats(res_ethnicity3_up_promoter$SYMBOL,10)
+# top10_up
+
+regulation_results[nrow(regulation_results)+1,]=c("UP",n_up,paste(top10_up,collapse = ","))
+
+res_ethnicity3_down=res_ethnicity3[(res_ethnicity3$FDR<0.05 & res_ethnicity3$log2FoldChange < -1),]
+n_down=nrow(res_ethnicity3_down)
+res_ethnicity3_down_promoter=subset(res_ethnicity3_down,shortAnno %in% c("Promoter"))
+res_ethnicity3_down_promoter=arrange(res_ethnicity3_down_promoter,log2FoldChange)
+top10_down=get_topx_excluding_repeats(res_ethnicity3_down_promoter$SYMBOL,10)
+regulation_results[nrow(regulation_results)+1,]=c("DOWN",n_down,paste(top10_down,collapse = ","))
+
+
+pander(regulation_results,style="rmarkdown")
+```
+
+### Design3:VolcanoPlot
+
+VolcanoPlot include are differentially open peaks (promoter and other regions). Labels denote the nearest annotated gene.
+
+```{r volcano2,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
+# lab = res_df$gene_name,
+p <-  EnhancedVolcano::EnhancedVolcano(res_ethnicity3, 
+                lab=res_ethnicity3$SYMBOL,
+                x = "log2FoldChange", 
+                y = "FDR", 
+                ylab = bquote(~-Log[10]~FDR),
+                FCcutoff = 1, 
+                xlim=c(min(res_ethnicity3$log2FoldChange)-1,max(res_ethnicity3$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res_ethnicity3$FDR), na.rm=TRUE) + 1),
+                pCutoff = 0.05,
+                legendPosition = 'top',
+                pointSize = 0.8,
+                labSize = 4,
+                legendLabSize = 8,
+                legendIconSize = 2,
+                legendLabels = c("NS","log2FC > |1|","FDR < 0.05","significant (FDR < 0.05) & log2FC > |1|"),
+                title="",titleLabSize=0,
+                subtitle = "",subtitleLabSize = 1,
+                caption = "",captionLabSize=0)
+print(p)
+```
+
+
+```{r filter2,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+#cluster1
+sampleinfo3=sampleinfo[sampleinfo$MolecularSubtype %in% c("Luminal A","Basal B", "HER+"),]
+cluster1_only_replicates=sampleinfo3$sample_name
+countmatrix3=countmatrix[,cluster1_only_replicates]
+cpm_cm3=cpm(countmatrix3)
+keep=rowSums(cpm_cm3>1)>2
+countmatrix3=countmatrix3[keep,]
+dds4 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix3),
+                                colData = sampleinfo3[,c("sample_name","Ethnicity")],
+                                design = ~ Ethnicity)
+dds4 <- DESeq(dds4)
+# deg results
+res_ethnicity4 <- results(dds4)
+as.data.frame(res_ethnicity4) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res_ethnicity4
+
+names(res_ethnicity4)[names(res_ethnicity4) == 'padj'] <- 'FDR'
+res_ethnicity4=merge(res_ethnicity4,pa,by="peakID")
+
+condition2=levels(dds4$Ethnicity)[1]
+condition1=levels(dds4$Ethnicity)[2]
+contrast=paste(condition1,"vs",condition2,"cluster1_celllines",sep="_")
+tmp_res_df=res_ethnicity4[,c("peakID","log2FoldChange","FDR")]
+colnames(tmp_res_df)=c("peakID",paste(contrast,"log2FoldChange",sep="_"),paste(contrast,"FDR",sep = "_"))
+
+pa=merge(pa,tmp_res_df,by=c("peakID"))
+
+rld4 <- vst(dds4)
+assayrld4 = as.data.frame(assay(rld4))
+assayrld4$row_variance = rowVars(as.matrix(assayrld4))
+assayrld4 = arrange(assayrld4,desc(row_variance)) 
+zero_variance_rows=assayrld4$row_variance<1e-5
+table(zero_variance_rows)
+assayrld4$row_variance = NULL
+assayrld4 = assayrld4[!zero_variance_rows,]
+assayrld4_original=assayrld4
+assayrld4 = assayrld4[1:50000,]
+pca4=prcomp(t(assayrld4),scale. = T)
+m.pc1 = round(pca4$sdev[1]^2/sum(pca4$sdev^2)*100,2)
+m.pc2 = round(pca4$sdev[2]^2/sum(pca4$sdev^2)*100,2)
+m.pc3 = round(pca4$sdev[3]^2/sum(pca4$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+
+## Design4
+
+Only samples belonging to the Molecular subtypes:
+  * Luminal A
+  * Basal B
+  * HER+
+are included for this design. This is referred to as "cluster1" in this document, as it forms a separate cluster on the overall PCA plot.
+
+### Design4:PCA 
+
+PCA for (design = ~ Ethnicity; cluster1 only)
+
+Contrast = `r contrast`
+
+```{r plotpca4, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo3$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo3$Ethnicity)
+p <- ggplot(pca4$x,aes(x=PC1,y=PC2,label=rownames(pca4$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("pca2 top 50K peaks with most variance")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+### Design4:MAPlot
+
+```{r ma2, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide'}
+p<-DESeq2::plotMA(dds4)
+print(p)
+```
+
+### Design4:DEGresults 
+
+Design4 only has samples from Cluster1 (Luminal A + Basal B + HER+).
+Here, DEG results represent differentially open ATAC-seq peaks. Up are peaks that significantly more open in `r condition1`, while Down show peaks that are significantly more open in `r condition2`. These DEG peaks are merged with peak annotations to filter significantly variable peaks in known promoter regions are top 10 such promoter region peaks are shown below:
+
+```{r degstats3,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+get_topx_excluding_repeats<-function(list_of_symbols,x=10){
+  l=c()
+  count=0
+  for (i in list_of_symbols){
+    if (!(i %in% l)){
+      l=c(l,i)
+      count=count+1
+      if (count==x) {
+        break
+      }
+    }
+  }
+return(l)  
+}
+
+
+
+regulation_results=data.frame(matrix(ncol = 3, nrow = 0))
+colnames(regulation_results)=c("Regulation","Number of Peaks","Top10 genes with Promoter Peaks")
+
+res_ethnicity4_up=res_ethnicity4[(res_ethnicity4$FDR<0.05 & res_ethnicity4$log2FoldChange > 1),]
+n_up=nrow(res_ethnicity4_up)
+res_ethnicity4_up_promoter=subset(res_ethnicity4_up,shortAnno %in% c("Promoter"))
+res_ethnicity4_up_promoter=arrange(res_ethnicity4_up_promoter,desc(log2FoldChange))
+
+# get top 10 genes excluding repeats
+top10_up=get_topx_excluding_repeats(res_ethnicity4_up_promoter$SYMBOL,10)
+# top10_up
+
+regulation_results[nrow(regulation_results)+1,]=c("UP",n_up,paste(top10_up,collapse = ","))
+
+res_ethnicity4_down=res_ethnicity4[(res_ethnicity4$FDR<0.05 & res_ethnicity4$log2FoldChange < -1),]
+n_down=nrow(res_ethnicity4_down)
+res_ethnicity4_down_promoter=subset(res_ethnicity4_down,shortAnno %in% c("Promoter"))
+res_ethnicity4_down_promoter=arrange(res_ethnicity4_down_promoter,log2FoldChange)
+top10_down=get_topx_excluding_repeats(res_ethnicity4_down_promoter$SYMBOL,10)
+regulation_results[nrow(regulation_results)+1,]=c("DOWN",n_down,paste(top10_down,collapse = ","))
+
+
+pander(regulation_results,style="rmarkdown")
+```
+
+
+### Design4:VolcanoPlot
+
+VolcanoPlot include are differentially open peaks (promoter and other regions). Labels denote the nearest annotated gene.
+
+```{r volcano3,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
+# lab = res_df$gene_name,
+p <-  EnhancedVolcano::EnhancedVolcano(res_ethnicity4, 
+                lab=res_ethnicity4$SYMBOL,
+                x = "log2FoldChange", 
+                y = "FDR", 
+                ylab = bquote(~-Log[10]~FDR),
+                FCcutoff = 1, 
+                xlim=c(min(res_ethnicity4$log2FoldChange)-1,max(res_ethnicity4$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res_ethnicity4$FDR), na.rm=TRUE) + 1),
+                pCutoff = 0.05,
+                legendPosition = 'top',
+                pointSize = 0.8,
+                labSize = 4,
+                legendLabSize = 8,
+                legendIconSize = 2,
+                legendLabels = c("NS","log2FC > |1|","FDR < 0.05","significant (FDR < 0.05) & log2FC > |1|"),
+                title="",titleLabSize=0,
+                subtitle = "",subtitleLabSize = 1,
+                caption = "",captionLabSize=0)
+print(p)
+```
+
+
+
+```{r normal,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+#cluster1
+sampleinfo4=sampleinfo
+sampleinfo4$normal="NotNormal"
+normals=sampleinfo$MolecularSubtype %in% c("Normal")
+sampleinfo4$normal[normals]="Normal"
+
+dds5 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix),
+                                colData = sampleinfo4[,c("sample_name","normal")],
+                                design = ~ normal)
+dds5 <- DESeq(dds5)
+# deg results
+res5 <- results(dds5)
+as.data.frame(res5) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res5
+
+names(res5)[names(res5) == 'padj'] <- 'FDR'
+res5=merge(res5,pa,by="peakID")
+
+condition2=levels(dds5$normal)[1]
+condition1=levels(dds5$normal)[2]
+contrast=paste(condition1,"vs",condition2,sep="_")
+tmp_res_df=res5[,c("peakID","log2FoldChange","FDR")]
+colnames(tmp_res_df)=c("peakID",paste(contrast,"log2FoldChange",sep="_"),paste(contrast,"FDR",sep = "_"))
+
+pa=merge(pa,tmp_res_df,by=c("peakID"))
+
+rld5 <- vst(dds5)
+assayrld5 = as.data.frame(assay(rld5))
+assayrld5$row_variance = rowVars(as.matrix(assayrld5))
+assayrld5 = arrange(assayrld5,desc(row_variance)) 
+zero_variance_rows=assayrld5$row_variance<1e-5
+table(zero_variance_rows)
+assayrld5$row_variance = NULL
+assayrld5 = assayrld5[!zero_variance_rows,]
+assayrld5_original=assayrld5
+assayrld5 = assayrld5[1:50000,]
+pca5=prcomp(t(assayrld5),scale. = T)
+m.pc1 = round(pca5$sdev[1]^2/sum(pca5$sdev^2)*100,2)
+m.pc2 = round(pca5$sdev[2]^2/sum(pca5$sdev^2)*100,2)
+m.pc3 = round(pca5$sdev[3]^2/sum(pca5$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+## Design5
+
+Here, we again included all samples but the DESeq2 design is looking for difference between Tumor vs Normal samples.
+
+### Design5:PCA
+
+PCA for  (design = ~ normal)
+
+Contrast = `r contrast`
+
+```{r plotpca4.2, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo4$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo4$Ethnicity)
+p <- ggplot(pca5$x,aes(x=PC1,y=PC2,label=rownames(pca5$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("pca2 top 50K peaks with most variance")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+### Design5:MAPlot
+
+```{r ma5, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide'}
+p<-DESeq2::plotMA(dds5)
+print(p)
+```
+
+### Design5:DEGresults
+
+Design5 is Tumor vs. Normal for all cell lines.
+Here, DEG results represent differentially open ATAC-seq peaks. Up are peaks that significantly more open in `r condition1`, while Down show peaks that are significantly more open in `r condition2`. These DEG peaks are merged with peak annotations to filter significantly variable peaks in known promoter regions are top 10 such promoter region peaks are shown below:
+
+
+```{r degstats4,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+get_topx_excluding_repeats<-function(list_of_symbols,x=10){
+  l=c()
+  count=0
+  for (i in list_of_symbols){
+    if (!(i %in% l)){
+      l=c(l,i)
+      count=count+1
+      if (count==x) {
+        break
+      }
+    }
+  }
+return(l)  
+}
+
+
+
+regulation_results=data.frame(matrix(ncol = 3, nrow = 0))
+colnames(regulation_results)=c("Regulation","Number of Peaks","Top10 genes with Promoter Peaks")
+
+res5_up=res5[(res5$FDR<0.05 & res5$log2FoldChange > 1),]
+n_up=nrow(res5_up)
+res5_up_promoter=subset(res5_up,shortAnno %in% c("Promoter"))
+res5_up_promoter=arrange(res5_up_promoter,desc(log2FoldChange))
+
+# get top 10 genes excluding repeats
+top10_up=get_topx_excluding_repeats(res5_up_promoter$SYMBOL,10)
+# top10_up
+
+regulation_results[nrow(regulation_results)+1,]=c("UP",n_up,paste(top10_up,collapse = ","))
+
+res5_down=res5[(res5$FDR<0.05 & res5$log2FoldChange < -1),]
+n_down=nrow(res5_down)
+res5_down_promoter=subset(res5_down,shortAnno %in% c("Promoter"))
+res5_down_promoter=arrange(res5_down_promoter,log2FoldChange)
+top10_down=get_topx_excluding_repeats(res5_down_promoter$SYMBOL,10)
+regulation_results[nrow(regulation_results)+1,]=c("DOWN",n_down,paste(top10_down,collapse = ","))
+
+
+pander(regulation_results,style="rmarkdown")
+```
+
+
+### Design5:VolcanoPlot
+
+VolcanoPlot include are differentially open peaks (promoter and other regions). Labels denote the nearest annotated gene.
+
+```{r volcano4,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
+# lab = res_df$gene_name,
+p <-  EnhancedVolcano::EnhancedVolcano(res5, 
+                lab=res5$SYMBOL,
+                x = "log2FoldChange", 
+                y = "FDR", 
+                ylab = bquote(~-Log[10]~FDR),
+                FCcutoff = 1, 
+                xlim=c(min(res5$log2FoldChange)-1,max(res5$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res5$FDR), na.rm=TRUE) + 1),
+                pCutoff = 0.05,
+                legendPosition = 'top',
+                pointSize = 0.8,
+                labSize = 4,
+                legendLabSize = 8,
+                legendIconSize = 2,
+                legendLabels = c("NS","log2FC > |1|","FDR < 0.05","significant (FDR < 0.05) & log2FC > |1|"),
+                title="",titleLabSize=0,
+                subtitle = "",subtitleLabSize = 1,
+                caption = "",captionLabSize=0)
+print(p)
+```
+
+
+## Design6
+
+Luminal A is the only Molecular Subtype which has both Caucasian and AA multiple samples. So, running ethnicity design for only Luminal A
+
+
+```{r luminalAonly,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+
+sampleinfo6=sampleinfo[sampleinfo$MolecularSubtype %in% c("Luminal A"),]
+luminalA_only_replicates=sampleinfo6$sample_name
+countmatrix6=countmatrix[,luminalA_only_replicates]
+cpm_cm6=cpm(countmatrix6)
+keep=rowSums(cpm_cm6>1)>2
+countmatrix6=countmatrix6[keep,]
+
+
+dds6 <- DESeqDataSetFromMatrix(countData = as.matrix(countmatrix6),
+                                colData = sampleinfo6[,c("sample_name","Ethnicity")],
+                                design = ~ Ethnicity)
+dds6 <- DESeq(dds6)
+# deg results
+res6 <- results(dds6)
+as.data.frame(res6) %>% drop_na() %>% arrange(padj) %>% rownames_to_column(var="peakID") -> res6
+
+names(res6)[names(res6) == 'padj'] <- 'FDR'
+res6=merge(res6,pa,by="peakID")
+
+condition2=levels(dds6$Ethnicity)[1]
+condition1=levels(dds6$Ethnicity)[2]
+contrast=paste(condition1,"vs",condition2,"LuminalA_only",sep="_")
+tmp_res_df=res6[,c("peakID","log2FoldChange","FDR")]
+colnames(tmp_res_df)=c("peakID",paste(contrast,"log2FoldChange",sep="_"),paste(contrast,"FDR",sep = "_"))
+
+pa=merge(pa,tmp_res_df,by=c("peakID"))
+
+rld6 <- vst(dds6)
+assayrld6 = as.data.frame(assay(rld6))
+assayrld6$row_variance = rowVars(as.matrix(assayrld6))
+assayrld6 = arrange(assayrld6,desc(row_variance)) 
+zero_variance_rows=assayrld6$row_variance<1e-5
+table(zero_variance_rows)
+assayrld6$row_variance = NULL
+assayrld6 = assayrld6[!zero_variance_rows,]
+assayrld6_original=assayrld6
+# assayrld6=assayrld6_original
+assayrld6 = assayrld6[1:50000,]
+pca6=prcomp(t(assayrld6),scale. = T)
+m.pc1 = round(pca6$sdev[1]^2/sum(pca6$sdev^2)*100,2)
+m.pc2 = round(pca6$sdev[2]^2/sum(pca6$sdev^2)*100,2)
+m.pc3 = round(pca6$sdev[3]^2/sum(pca6$sdev^2)*100,2)
+xlab=paste0("PC1(",m.pc1,"%)")
+ylab=paste0("PC2(",m.pc2,"%)")
+```
+
+### Design6:PCA
+
+PCA for Luminal A only
+
+Contrast = `r contrast`
+
+```{r plotpca6, echo=FALSE}
+# p <- ggplot2::autoplot(pca,label=T,repel = TRUE,label.size = 3,label.repel=T)+theme_light()+ggtitle("PCA with top 500 genes")
+# print(p)
+MolecularSubtype=as.factor(sampleinfo6$MolecularSubtype)
+Ethnicity=as.factor(sampleinfo6$Ethnicity)
+p <- ggplot(pca6$x,aes(x=PC1,y=PC2,label=rownames(pca6$x)))+
+  geom_point(aes(col=Ethnicity,shape=MolecularSubtype))+scale_shape_manual(values=seq(0,15))+
+  geom_text_repel(max.overlaps = 10,size=2)+
+  xlab(xlab)+ylab(ylab)+
+  theme_light(base_size = 10)+
+  ggtitle("pca2 top 50K peaks with most variance")+
+  theme_light()
+  # geom_point(aes(col=condition,
+  #                shape=condition))+scale_shape_manual(values=seq(0,15))+
+
+print(p)
+```
+
+
+### Design6:MAPlot
+
+```{r ma6, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE,results='hide'}
+p<-DESeq2::plotMA(dds6)
+print(p)
+```
+
+### Design6:DEGresults
+
+Design6 is Caucasian vs AA for all cell lines.
+Here, DEG results represent differentially open ATAC-seq peaks. Up are peaks that significantly more open in `r condition1`, while Down show peaks that are significantly more open in `r condition2`. These DEG peaks are merged with peak annotations to filter significantly variable peaks in known promoter regions are top 10 such promoter region peaks are shown below:
+
+
+```{r degstats6,echo=FALSE,include=TRUE,warning=FALSE,message=FALSE,error=FALSE}
+get_topx_excluding_repeats<-function(list_of_symbols,x=10){
+  l=c()
+  count=0
+  for (i in list_of_symbols){
+    if (!(i %in% l)){
+      l=c(l,i)
+      count=count+1
+      if (count==x) {
+        break
+      }
+    }
+  }
+return(l)  
+}
+
+
+
+regulation_results=data.frame(matrix(ncol = 3, nrow = 0))
+colnames(regulation_results)=c("Regulation","Number of Peaks","Top10 genes with Promoter Peaks")
+
+res6_up=res6[(res6$FDR<0.05 & res6$log2FoldChange > 1),]
+n_up=nrow(res6_up)
+res6_up_promoter=subset(res6_up,shortAnno %in% c("Promoter"))
+res6_up_promoter=arrange(res6_up_promoter,desc(log2FoldChange))
+
+# get top 10 genes excluding repeats
+top10_up=get_topx_excluding_repeats(res6_up_promoter$SYMBOL,10)
+# top10_up
+
+regulation_results[nrow(regulation_results)+1,]=c("UP",n_up,paste(top10_up,collapse = ","))
+
+res6_down=res6[(res6$FDR<0.05 & res6$log2FoldChange < -1),]
+n_down=nrow(res6_down)
+res6_down_promoter=subset(res6_down,shortAnno %in% c("Promoter"))
+res6_down_promoter=arrange(res6_down_promoter,log2FoldChange)
+top10_down=get_topx_excluding_repeats(res6_down_promoter$SYMBOL,10)
+regulation_results[nrow(regulation_results)+1,]=c("DOWN",n_down,paste(top10_down,collapse = ","))
+
+
+pander(regulation_results,style="rmarkdown")
+```
+
+
+### Design6:VolcanoPlot
+
+VolcanoPlot include are differentially open peaks (promoter and other regions). Labels denote the nearest annotated gene.
+
+```{r volcano6,echo=FALSE,include=TRUE,fig.dim = c(12, 5),warning=FALSE,message=FALSE,error=FALSE,}
+# lab = res_df$gene_name,
+p <-  EnhancedVolcano::EnhancedVolcano(res6, 
+                lab=res6$SYMBOL,
+                x = "log2FoldChange", 
+                y = "FDR", 
+                ylab = bquote(~-Log[10]~FDR),
+                FCcutoff = 1, 
+                xlim=c(min(res6$log2FoldChange)-1,max(res6$log2FoldChange)+1),
+                ylim= c(0, max(-log10(res6$FDR), na.rm=TRUE) + 1),
+                pCutoff = 0.05,
+                legendPosition = 'top',
+                pointSize = 0.8,
+                labSize = 4,
+                legendLabSize = 8,
+                legendIconSize = 2,
+                legendLabels = c("NS","log2FC > |1|","FDR < 0.05","significant (FDR < 0.05) & log2FC > |1|"),
+                title="",titleLabSize=0,
+                subtitle = "",subtitleLabSize = 1,
+                caption = "",captionLabSize=0)
+print(p)
+```
+
+```{r end,include=FALSE}
+write.table(pa,file=paste0(mount,"analysis/project1/CCBR_ATACseq_102621/results/peaks/genrich/fixed_width_peaks/regions_of_interest.m1.narrowPeak.annotations.DEGs.tsv"),quote = FALSE,sep="\t",row.names = FALSE,col.names = TRUE)
+# save.image(file=paste(degoutdir,"Rdata",sep = "/"))
 ```
